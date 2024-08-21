@@ -11,6 +11,8 @@ from typing import Any, AsyncGenerator, Literal
 import filetype
 import pyotp
 from httpx import AsyncClient, AsyncHTTPTransport, Response
+from tls_client import Session
+
 from httpx._utils import URLPattern
 
 from .._captcha import Capsolver
@@ -71,6 +73,7 @@ class Client:
         proxy: str | None = None,
         captcha_solver: Capsolver | None = None,
         user_agent: str | None = None,
+        tls_client_args: dict = {},
         **kwargs
     ) -> None:
         if 'proxies' in kwargs:
@@ -80,9 +83,12 @@ class Client:
             )
             warnings.warn(message)
 
-        self.http = AsyncClient(proxy=proxy, **kwargs)
+        self.http = Session(random_tls_extension_order=True,
+                            **tls_client_args)
+#        self.http = AsyncClient(proxy=proxy, **kwargs)
         self.language = language
-        self.proxy = proxy
+#         self.proxy = proxy
+        self.http.proxies = proxy
         self.captcha_solver = captcha_solver
         if captcha_solver is not None:
             captcha_solver.client = self
@@ -105,7 +111,13 @@ class Client:
     ) -> tuple[dict | Any, Response]:
         ':meta private:'
         cookies_backup = self.get_cookies().copy()
-        response = await self.http.request(method, url, **kwargs)
+        if method == "GET":
+            response = self.http.get(url, **kwargs)
+        elif method == "POST":
+            response = self.http.post(url, **kwargs)
+        else:
+            raise ValueError(f"Invalid method: {method}")
+#        response = await self.http.request(method, url, **kwargs)
         self._remove_duplicate_ct0_cookie()
 
         try:
@@ -171,6 +183,7 @@ class Client:
         return await self.request('POST', url, **kwargs)
 
     def _remove_duplicate_ct0_cookie(self) -> None:
+        return
         cookies = {}
         for cookie in self.http.cookies.jar:
             if 'ct0' in cookies and cookie.name == 'ct0':
@@ -387,8 +400,12 @@ class Client:
 
         if not flow.response['subtasks']:
             return
-
-        self._user_id = flow.response['subtasks'][0]['open_account']['user']['id_str']
+        
+        try:
+            self._user_id = flow.response['subtasks'][0]['open_account']['user']['id_str']
+        except KeyError:
+            data = flow.response['subtasks'][0]['enter_text']
+            self._user_id = data["header"]['user']['id']
 
         if flow.task_id == 'LoginTwoFactorAuthChallenge':
             if totp_secret is None:
